@@ -1,9 +1,10 @@
 ---
 name: memory-sync
-description: 三层自动化记忆同步系统 — 每日同步、每周复利、白天微同步，实现OpenClaw Agent"永不失忆"。灵感来自Cali Castle的踩坑教程。
+version: "2.0"
+description: 三层自动化记忆同步系统 — 每日同步、每周复利、白天微同步，增加检查点提取、决策日志和知识验证。
 ---
 
-# Memory Sync — 三层自动化记忆架构
+# Memory Sync 2.0 — 三层自动化记忆架构
 
 让你的OpenClaw Agent永不失忆。通过三层cron自动化 + QMD语义搜索，实现记忆的自动捕获、蒸馏和检索。
 
@@ -12,15 +13,16 @@ description: 三层自动化记忆同步系统 — 每日同步、每周复利�
 ```
 ┌─────────────────────────────────────────────┐
 │              MEMORY.md (精华)                │ ← 每次session自动注入
-│         精简的长期记忆 cheat sheet            │
+│         精简的长期记忆 cheat sheet            │    含知识验证标记
 ├─────────────────────────────────────────────┤
 │                                             │
 │  Layer 1: Daily Sync (每晚)                 │ ← 全量蒸馏当天sessions
-│  Layer 2: Weekly Compound (每周日)           │ ← 知识复利，更新MEMORY.md
-│  Layer 3: Micro-Sync (白天每3h)             │ ← 安全网，防止遗漏
+│  Layer 2: Weekly Compound (每周日)           │ ← 知识复利 + 知识验证
+│  Layer 3: Micro-Sync (白天每3h)             │ ← 安全网 + 检查点提取
 │                                             │
 ├─────────────────────────────────────────────┤
-│  memory/YYYY-MM-DD.md  (每日日志)            │ ← 原始素材，按需检索
+│  memory/YYYY-MM-DD.md  (每日日志)            │ ← 原始素材 + 检查点摘要
+│  memory/decisions/YYYY-MM-DD_描述.md         │ ← 决策日志（实时记录）
 ├─────────────────────────────────────────────┤
 │  QMD Vector Search (语义搜索)                │ ← BM25 + Vector + Reranking
 └─────────────────────────────────────────────┘
@@ -78,26 +80,70 @@ bash {baseDir}/scripts/setup.sh --model "anthropic/claude-sonnet-4-5"
 - ...
 ```
 
-### Layer 2: Weekly Memory Compound — 每周知识复利
+### Layer 2: Weekly Memory Compound — 每周知识复利 + 知识验证
 
 **触发**: 每周日 22:00
-**作用**: 读取本周7天日志，蒸馏更新MEMORY.md
+**作用**: 读取本周7天日志 + 决策日志，蒸馏更新MEMORY.md，验证过时信息
 
 流程:
-1. 读取本周所有 `memory/YYYY-MM-DD.md`
+1. 读取本周所有 `memory/YYYY-MM-DD.md` 和 `memory/decisions/` 下本周文件
 2. 提取新偏好、决策模式、项目状态变化
-3. 更新 MEMORY.md，剪枝过时信息
-4. 执行 `qmd update && qmd embed`
+3. **知识验证**: 逐条审查 MEMORY.md，标记过时/矛盾/冗余信息
+   - 有明确证据过时 → 直接更新或删除
+   - 不确定 → 加 `⚠️ 待验证(YYYY-MM-DD)` 标记
+   - 待验证超过2周仍无新证据 → 删除
+4. 更新 MEMORY.md，整合决策日志要点
+5. 在当周日志追加 `## 知识验证报告`
+6. 执行 `qmd update && qmd embed`
 
-### Layer 3: Hourly Micro-Sync — 白天安全网
+### Layer 3: Hourly Micro-Sync — 白天安全网 + 检查点提取
 
 **触发**: 白天每3小时 (10:00, 13:00, 16:00, 19:00, 22:00)
-**作用**: 轻量检查，防止重要信息遗漏
+**作用**: 轻量检查 + 从当日日志中提取关键检查点
 
 流程:
 1. 检查最近3小时是否有有意义的活动
 2. 有 → append简要摘要到当天日志
-3. 没有 → 静默退出，不发通知
+3. 从当日日志提取检查点摘要（今日成就、学习收获、重要决策、待跟进事项）
+4. 覆盖式更新当日日志的 `## 检查点摘要` section
+5. 没有活动且无变化 → 静默退出
+
+## 决策日志 — 实时记录重要决策
+
+当agent在任何session中遇到**重要决策**时，应自动记录到 `memory/decisions/` 目录。
+
+**什么算"重要决策"：**
+- 架构选择（技术栈、方案A vs B）
+- 购买/订阅决定
+- 项目方向变更
+- 工作流/习惯的重大调整
+- 任何用户明确说"我决定..."的事
+
+**不需要记录的：**
+- 日常操作（选哪个文件名、用哪个命令）
+- 用户没有参与的自动化决策
+
+**文件格式：**
+```
+文件名: memory/decisions/YYYY-MM-DD_简短描述.md
+
+# 决策: 简短描述
+
+**日期**: YYYY-MM-DD
+**背景**: 为什么需要做这个决策
+
+## 选项
+1. **选项A** — 描述，优劣
+2. **选项B** — 描述，优劣
+
+## 最终选择
+选项X
+
+## 原因
+为什么选这个
+```
+
+**触发方式**: Agent在主session中识别到重要决策后，立即写入文件。不需要cron，不需要用户指令。周复利任务会自动整合这些决策日志。
 
 ## AGENTS.md 推荐补丁
 
@@ -167,6 +213,11 @@ Never read MEMORY.md or memory/*.md in full for lookups. Use memory_search/qmd:
 - **不能把所有东西塞进context window** — 那是把整个图书馆搬进考场
 - **带一张精心整理的cheat sheet (MEMORY.md)** — 需要查资料时用语义搜索翻书
 - **每日日志是原始素材** — MEMORY.md是蒸馏后的精华
+
+### 2.0 新增的设计思路
+- **检查点提取**: 微同步不再只是"有没有变化"的布尔检查，而是主动从日志中提炼结构化信息，为日同步提供半成品
+- **决策日志**: 重要决策值得单独记录，不该淹没在日志流水里。独立文件方便回溯和周复利整合
+- **知识验证**: MEMORY.md不是只增不减的。每周主动检查过时信息，保持cheat sheet的时效性和精准度
 
 ### 为什么用isolated session？
 - 记忆同步不会污染主session
